@@ -43,6 +43,12 @@ const AdminDashboard = () => {
   const detectionRef = useRef(null);
   const officeId = user?.office_id;
 
+  // Use a ref to store isCameraOn to completely bypass React state closure limitations inside requestAnimationFrame
+  const isCameraOnRef = useRef(isCameraOn);
+  useEffect(() => {
+    isCameraOnRef.current = isCameraOn;
+  }, [isCameraOn]);
+
   // Load AI Model on Mount
   useEffect(() => {
     const loadModel = async () => {
@@ -88,35 +94,56 @@ const AdminDashboard = () => {
   }, [crowdCount, hasHighCrowdAlert]);
 
   const runDetection = async () => {
-    if (aiModel && videoRef.current && isCameraOn) {
-      const predictions = await aiModel.detect(videoRef.current);
-      
-      // Filter only persons
-      const persons = predictions.filter(p => p.class === 'person');
-      const count = persons.length;
-      
-      setCrowdCount(count);
-
-      // Draw detection boxes on canvas
-      if (canvasRef.current) {
-        const ctx = canvasRef.current.getContext('2d');
-        ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+    if (aiModel && videoRef.current && isCameraOnRef.current) {
+      try {
+        const predictions = await aiModel.detect(videoRef.current);
         
-        persons.forEach(person => {
-          const [x, y, width, height] = person.bbox;
-          ctx.strokeStyle = '#4f46e5';
-          ctx.lineWidth = 4;
-          ctx.strokeRect(x, y, width, height);
-          ctx.fillStyle = '#4f46e5';
-          ctx.font = 'bold 16px Inter';
-          ctx.fillText(`Person ${Math.round(person.score * 100)}%`, x, y > 20 ? y - 10 : y + 20);
-        });
+        // Filter only persons
+        const persons = predictions.filter(p => p.class === 'person');
+        const count = persons.length;
+        
+        setCrowdCount(count);
+
+        // Draw detection boxes on canvas
+        if (canvasRef.current) {
+          const ctx = canvasRef.current.getContext('2d');
+          ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+          
+          persons.forEach(person => {
+            const [x, y, width, height] = person.bbox;
+            ctx.strokeStyle = '#4f46e5';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(x, y, width, height);
+            ctx.fillStyle = '#4f46e5';
+            ctx.font = 'bold 16px Inter';
+            ctx.fillText(`Person ${Math.round(person.score * 100)}%`, x, y > 20 ? y - 10 : y + 20);
+          });
+        }
+      } catch (err) {
+        console.error("AI inference error:", err);
       }
 
-      // Sync with DB every few seconds
-      detectionRef.current = requestAnimationFrame(runDetection);
+      // Schedule the next frame if camera is still active
+      if (isCameraOnRef.current) {
+        detectionRef.current = requestAnimationFrame(runDetection);
+      }
     }
   };
+
+  // Run the detection loop automatically when camera turns on and video element is ready
+  useEffect(() => {
+    let loopTimeout;
+    if (isCameraOn && aiModel) {
+      loopTimeout = setTimeout(() => {
+        if (videoRef.current) {
+          runDetection();
+        }
+      }, 500);
+    }
+    return () => {
+      clearTimeout(loopTimeout);
+    };
+  }, [isCameraOn, aiModel]);
 
   // Periodic Sync to Backend
   useEffect(() => {
@@ -142,12 +169,14 @@ const AdminDashboard = () => {
       });
       setStream(mediaStream);
       setIsCameraOn(true);
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-        videoRef.current.onloadedmetadata = () => {
-          runDetection();
-        };
-      }
+      
+      // Delay binding srcObject slightly to let React finish rendering the video element
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = mediaStream;
+        }
+      }, 100);
+      
       toast.success("AI Monitoring Online");
     } catch (err) {
       toast.error("Camera Access Denied");
@@ -163,7 +192,14 @@ const AdminDashboard = () => {
     }
     setIsCameraOn(false);
     setCrowdCount(0);
-    if (detectionRef.current) cancelAnimationFrame(detectionRef.current);
+    if (detectionRef.current) {
+      cancelAnimationFrame(detectionRef.current);
+    }
+    // Clear canvas when camera stops
+    if (canvasRef.current) {
+      const ctx = canvasRef.current.getContext('2d');
+      ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+    }
   };
 
   if (loading) return <Loader />;
