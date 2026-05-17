@@ -49,10 +49,3 @@ pip-delete-this-directory.txt
 
 # Instance folder
 instance/
-
-# AI/ML Models
-yolov8n.pt
-yolov8n.pt/
-*.pt
-*.onnx
-
